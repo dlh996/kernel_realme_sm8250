@@ -1494,27 +1494,27 @@ board_temp-usr {
 	};
 
 	4g_pa_therm-usr {
-		polling-delay-passive = <1000>;
-		polling-delay = <0>;
+		polling-delay-passive = <5000>;
+		polling-delay = <2000>;
 		thermal-governor = "step_wise";
 		thermal-sensors = <&pm8150b_adc_tm ADC_AMUX_THM1_PU2>;
 		wake-capable-sensor;
 		trips {
 			modem_trip_pa2_0: modem_trip_pa2_0 {
-				temperature = <38000>;
-				hysteresis = <4000>;
+				temperature = <44000>;
+				hysteresis = <10000>;
 				type = "passive";
 			};
 
 			modem_trip_pa2_1: modem_trip_pa2_1 {
-				temperature = <40000>;
-				hysteresis = <4000>;
+				temperature = <46000>;
+				hysteresis = <10000>;
 				type = "passive";
 			};
 
 			modem_trip_pa2_2: modem_trip_pa2_2 {
-				temperature = <45000>;
-				hysteresis = <4000>;
+				temperature = <48000>;
+				hysteresis = <10000>;
 				type = "hot";
 			};
 		};
@@ -1569,27 +1569,27 @@ board_temp-usr {
 
 
 	4g-5g-pa-therm-usr {
-		polling-delay-passive = <1000>;
-		polling-delay = <0>;
+		polling-delay-passive = <5000>;
+		polling-delay = <2000>;
 		thermal-governor = "step_wise";
 		thermal-sensors = <&pm8150l_adc_tm ADC_AMUX_THM1_PU2>;
 		wake-capable-sensor;
 		trips {
 			modem_trip0: modem-trip0 {
-				temperature = <38000>;
-				hysteresis = <4000>;
+				temperature = <44000>;
+				hysteresis = <10000>;
 				type = "passive";
 			};
 
 			modem_trip1: modem-trip1 {
-				temperature = <40000>;
-				hysteresis = <4000>;
+				temperature = <45000>;
+				hysteresis = <10000>;
 				type = "passive";
 			};
 
 			modem_trip2: modem-trip2 {
-				temperature = <45000>;
-				hysteresis = <4000>;
+				temperature = <48000>;
+				hysteresis = <10000>;
 				type = "hot";
 			};
 		};
