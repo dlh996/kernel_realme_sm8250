@@ -71,6 +71,7 @@ static int ext4_mark_recovery_complete(struct super_block *sb,
 static int ext4_clear_journal_err(struct super_block *sb,
 				  struct ext4_super_block *es);
 static int ext4_sync_fs(struct super_block *sb, int wait);
+static void ext4_umount_end(struct super_block *sb, int flags);
 static int ext4_remount(struct super_block *sb, int *flags, char *data);
 static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf);
 static int ext4_unfreeze(struct super_block *sb);
@@ -906,16 +907,10 @@ static void ext4_blkdev_put(struct block_device *bdev)
 static void ext4_blkdev_remove(struct ext4_sb_info *sbi)
 {
 	struct block_device *bdev;
-	bdev = sbi->s_journal_bdev;
+	bdev = sbi->journal_bdev;
 	if (bdev) {
-		/*
-		 * Invalidate the journal device's buffers.  We don't want them
-		 * floating about in memory - the physical journal device may
-		 * hotswapped, and it breaks the `ro-after' testing code.
-		 */
-		invalidate_bdev(bdev);
 		ext4_blkdev_put(bdev);
-		sbi->s_journal_bdev = NULL;
+		sbi->journal_bdev = NULL;
 	}
 }
 
@@ -1039,8 +1034,14 @@ static void ext4_put_super(struct super_block *sb)
 
 	sync_blockdev(sb->s_bdev);
 	invalidate_bdev(sb->s_bdev);
-	if (sbi->s_journal_bdev && sbi->s_journal_bdev != sb->s_bdev) {
-		sync_blockdev(sbi->s_journal_bdev);
+	if (sbi->journal_bdev && sbi->journal_bdev != sb->s_bdev) {
+		/*
+		 * Invalidate the journal device's buffers.  We don't want them
+		 * floating about in memory - the physical journal device may
+		 * hotswapped, and it breaks the `ro-after' testing code.
+		 */
+		sync_blockdev(sbi->journal_bdev);
+		invalidate_bdev(sbi->journal_bdev);
 		ext4_blkdev_remove(sbi);
 	}
 	if (sbi->s_ea_inode_cache) {
@@ -1455,6 +1456,7 @@ static const struct super_operations ext4_sops = {
 	.freeze_fs	= ext4_freeze,
 	.unfreeze_fs	= ext4_unfreeze,
 	.statfs		= ext4_statfs,
+	.umount_end	= ext4_umount_end,
 	.remount_fs	= ext4_remount,
 	.show_options	= ext4_show_options,
 #ifdef CONFIG_QUOTA
@@ -2530,9 +2532,11 @@ static __le16 ext4_group_desc_csum(struct super_block *sb, __u32 block_group,
 	crc = crc16(crc, (__u8 *)gdp, offset);
 	offset += sizeof(gdp->bg_checksum); /* skip checksum */
 	/* for checksum of struct ext4_group_desc do the rest...*/
-	if (ext4_has_feature_64bit(sb) && offset < sbi->s_desc_size)
+	if (ext4_has_feature_64bit(sb) &&
+	    offset < le16_to_cpu(sbi->s_es->s_desc_size))
 		crc = crc16(crc, (__u8 *)gdp + offset,
-			    sbi->s_desc_size - offset);
+			    le16_to_cpu(sbi->s_es->s_desc_size) -
+				offset);
 
 out:
 	return cpu_to_le16(crc);
@@ -3653,7 +3657,7 @@ int ext4_calculate_overhead(struct super_block *sb)
 	 * Add the internal journal blocks whether the journal has been
 	 * loaded or not
 	 */
-	if (sbi->s_journal && !sbi->s_journal_bdev)
+	if (sbi->s_journal && !sbi->journal_bdev)
 		overhead += EXT4_NUM_B2C(sbi, sbi->s_journal->j_maxlen);
 	else if (ext4_has_feature_journal(sb) && !sbi->s_journal && j_inum) {
 		/* j_inum for internal journal is non-zero */
@@ -3973,6 +3977,12 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		const struct ext4_sb_encodings *encoding_info;
 		struct unicode_map *encoding;
 		__u16 encoding_flags;
+
+		if (ext4_has_feature_encrypt(sb)) {
+			ext4_msg(sb, KERN_ERR,
+				 "Can't mount with encoding and encryption");
+			goto failed_mount;
+		}
 
 		if (ext4_sb_read_encoding(es, &encoding_info,
 					  &encoding_flags)) {
@@ -4835,7 +4845,6 @@ failed_mount:
 	ext4_blkdev_remove(sbi);
 	brelse(bh);
 out_fail:
-	invalidate_bdev(sb->s_bdev);
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
 out_free_base:
@@ -5011,7 +5020,7 @@ static journal_t *ext4_get_dev_journal(struct super_block *sb,
 			be32_to_cpu(journal->j_superblock->s_nr_users));
 		goto out_journal;
 	}
-	EXT4_SB(sb)->s_journal_bdev = bdev;
+	EXT4_SB(sb)->journal_bdev = bdev;
 	ext4_init_journal_params(sb, journal);
 	return journal;
 
@@ -5421,6 +5430,27 @@ struct ext4_mount_options {
 #endif
 };
 
+static void ext4_umount_end(struct super_block *sb, int flags)
+{
+	/*
+	 * this is called at the end of umount(2). If there is an unclosed
+	 * namespace, ext4 won't do put_super() which triggers fsck in the
+	 * next boot.
+	 */
+	if ((flags & MNT_FORCE) || atomic_read(&sb->s_active) > 1) {
+		if (test_opt(sb, ERRORS_PANIC)) {
+			ext4_msg(sb, KERN_ERR,
+				"errors=remount-ro for active namespaces on umount %x",
+						flags);
+			clear_opt(sb, ERRORS_PANIC);
+			set_opt(sb, ERRORS_RO);
+		}
+		/* to write the latest s_kbytes_written */
+		if (!(sb->s_flags & MS_RDONLY))
+			ext4_commit_super(sb, 1);
+	}
+}
+
 static int ext4_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct ext4_super_block *es;
@@ -5664,6 +5694,9 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	}
 
 #ifdef CONFIG_QUOTA
+	/* Release old quota file names */
+	for (i = 0; i < EXT4_MAXQUOTAS; i++)
+		kfree(old_opts.s_qf_names[i]);
 	if (enable_quota) {
 		if (sb_any_quota_suspended(sb))
 			dquot_resume(sb, -1);
@@ -5673,9 +5706,6 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 				goto restore_opts;
 		}
 	}
-	/* Release old quota file names */
-	for (i = 0; i < EXT4_MAXQUOTAS; i++)
-		kfree(old_opts.s_qf_names[i]);
 #endif
 	if (!test_opt(sb, BLOCK_VALIDITY) && sbi->system_blks)
 		ext4_release_system_zone(sb);
@@ -5692,13 +5722,6 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	return 0;
 
 restore_opts:
-	/*
-	 * If there was a failing r/w to ro transition, we may need to
-	 * re-enable quota
-	 */
-	if ((sb->s_flags & SB_RDONLY) && !(old_sb_flags & SB_RDONLY) &&
-	    sb_any_quota_suspended(sb))
-		dquot_resume(sb, -1);
 	sb->s_flags = old_sb_flags;
 	sbi->s_mount_opt = old_opts.s_mount_opt;
 	sbi->s_mount_opt2 = old_opts.s_mount_opt2;
