@@ -537,7 +537,10 @@ MODULE_PARM_DESC(num_compress_pages,
 int f2fs_init_compress_mempool(void)
 {
 	compress_page_pool = mempool_create_page_pool(num_compress_pages, 0);
-	return compress_page_pool ? 0 : -ENOMEM;
+	if (!compress_page_pool)
+		return -ENOMEM;
+
+	return 0;
 }
 
 void f2fs_destroy_compress_mempool(void)
@@ -1188,7 +1191,7 @@ static int f2fs_write_compressed_pages(struct compress_ctx *cc,
 		.submitted = false,
 		.io_type = io_type,
 		.io_wbc = wbc,
-		.encrypted = f2fs_encrypted_file(cc->inode),
+		.encrypted = fscrypt_inode_uses_fs_layer_crypto(cc->inode),
 	};
 	struct dnode_of_data dn;
 	struct node_info ni;
@@ -1264,8 +1267,7 @@ static int f2fs_write_compressed_pages(struct compress_ctx *cc,
 			err = f2fs_encrypt_one_page(&fio);
 			if (err)
 				goto out_destroy_crypt;
-			if (fscrypt_inode_uses_fs_layer_crypto(inode))
-				cc->cpages[i] = fio.encrypted_page;
+			cc->cpages[i] = fio.encrypted_page;
 		}
 	}
 
@@ -1304,7 +1306,7 @@ static int f2fs_write_compressed_pages(struct compress_ctx *cc,
 
 		f2fs_bug_on(fio.sbi, blkaddr == NULL_ADDR);
 
-		if (fio.encrypted && fscrypt_inode_uses_fs_layer_crypto(inode))
+		if (fio.encrypted)
 			fio.encrypted_page = cc->cpages[i - 1];
 		else
 			fio.compressed_page = cc->cpages[i - 1];
@@ -1956,7 +1958,9 @@ int f2fs_init_page_array_cache(struct f2fs_sb_info *sbi)
 
 	sbi->page_array_slab = f2fs_kmem_cache_create(slab_name,
 					sbi->page_array_slab_size);
-	return sbi->page_array_slab ? 0 : -ENOMEM;
+	if (!sbi->page_array_slab)
+		return -ENOMEM;
+	return 0;
 }
 
 void f2fs_destroy_page_array_cache(struct f2fs_sb_info *sbi)
@@ -1964,24 +1968,53 @@ void f2fs_destroy_page_array_cache(struct f2fs_sb_info *sbi)
 	kmem_cache_destroy(sbi->page_array_slab);
 }
 
-int __init f2fs_init_compress_cache(void)
+static int __init f2fs_init_cic_cache(void)
 {
 	cic_entry_slab = f2fs_kmem_cache_create("f2fs_cic_entry",
 					sizeof(struct compress_io_ctx));
 	if (!cic_entry_slab)
 		return -ENOMEM;
+	return 0;
+}
+
+static void f2fs_destroy_cic_cache(void)
+{
+	kmem_cache_destroy(cic_entry_slab);
+}
+
+static int __init f2fs_init_dic_cache(void)
+{
 	dic_entry_slab = f2fs_kmem_cache_create("f2fs_dic_entry",
 					sizeof(struct decompress_io_ctx));
 	if (!dic_entry_slab)
+		return -ENOMEM;
+	return 0;
+}
+
+static void f2fs_destroy_dic_cache(void)
+{
+	kmem_cache_destroy(dic_entry_slab);
+}
+
+int __init f2fs_init_compress_cache(void)
+{
+	int err;
+
+	err = f2fs_init_cic_cache();
+	if (err)
+		goto out;
+	err = f2fs_init_dic_cache();
+	if (err)
 		goto free_cic;
 	return 0;
 free_cic:
-	kmem_cache_destroy(cic_entry_slab);
+	f2fs_destroy_cic_cache();
+out:
 	return -ENOMEM;
 }
 
 void f2fs_destroy_compress_cache(void)
 {
-	kmem_cache_destroy(dic_entry_slab);
-	kmem_cache_destroy(cic_entry_slab);
+	f2fs_destroy_dic_cache();
+	f2fs_destroy_cic_cache();
 }

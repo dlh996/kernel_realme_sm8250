@@ -51,10 +51,7 @@ static inline void mapping_set_error(struct address_space *mapping, int error)
 		return;
 
 	/* Record in wb_err for checkers using errseq_t based tracking */
-	__filemap_set_wb_err(mapping, error);
-
-	/* Record it in superblock */
-	errseq_set(&mapping->host->i_sb->s_wb_err, error);
+	filemap_set_wb_err(mapping, error);
 
 	/* Record it in flags for now, for legacy callers */
 	if (error == -ENOSPC)
@@ -119,6 +116,43 @@ static inline gfp_t mapping_gfp_constraint(struct address_space *mapping,
 static inline void mapping_set_gfp_mask(struct address_space *m, gfp_t mask)
 {
 	m->gfp_mask = mask;
+}
+
+/**
+ * attach_page_private - Attach private data to a page.
+ * @page: Page to attach data to.
+ * @data: Data to attach to page.
+ *
+ * Attaching private data to a page increments the page's reference count.
+ * The data must be detached before the page will be freed.
+ */
+static inline void attach_page_private(struct page *page, void *data)
+{
+	get_page(page);
+	set_page_private(page, (unsigned long)data);
+	SetPagePrivate(page);
+}
+
+/**
+ * detach_page_private - Detach private data from a page.
+ * @page: Page to detach data from.
+ *
+ * Removes the data that was previously attached to the page and decrements
+ * the refcount on the page.
+ *
+ * Return: Data that was attached to the page.
+ */
+static inline void *detach_page_private(struct page *page)
+{
+	void *data = (void *)page_private(page);
+
+	if (!PagePrivate(page))
+		return NULL;
+	ClearPagePrivate(page);
+	set_page_private(page, 0);
+	put_page(page);
+
+	return data;
 }
 
 void release_pages(struct page **pages, int nr);
@@ -221,43 +255,6 @@ static inline int page_cache_add_speculative(struct page *page, int count)
 	VM_BUG_ON_PAGE(PageCompound(page) && page != compound_head(page), page);
 
 	return 1;
-}
-
-/**
- * attach_page_private - Attach private data to a page.
- * @page: Page to attach data to.
- * @data: Data to attach to page.
- *
- * Attaching private data to a page increments the page's reference count.
- * The data must be detached before the page will be freed.
- */
-static inline void attach_page_private(struct page *page, void *data)
-{
-	get_page(page);
-	set_page_private(page, (unsigned long)data);
-	SetPagePrivate(page);
-}
-
-/**
- * detach_page_private - Detach private data from a page.
- * @page: Page to detach data from.
- *
- * Removes the data that was previously attached to the page and decrements
- * the refcount on the page.
- *
- * Return: Data that was attached to the page.
- */
-static inline void *detach_page_private(struct page *page)
-{
-	void *data = (void *)page_private(page);
-
-	if (!PagePrivate(page))
-		return NULL;
-	ClearPagePrivate(page);
-	set_page_private(page, 0);
-	put_page(page);
-
-	return data;
 }
 
 #ifdef CONFIG_NUMA
@@ -497,8 +494,8 @@ static inline pgoff_t linear_page_index(struct vm_area_struct *vma,
 	pgoff_t pgoff;
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return linear_hugepage_index(vma, address);
-	pgoff = (address - READ_ONCE(vma->vm_start)) >> PAGE_SHIFT;
-	pgoff += READ_ONCE(vma->vm_pgoff);
+	pgoff = (address - vma->vm_start) >> PAGE_SHIFT;
+	pgoff += vma->vm_pgoff;
 	return pgoff;
 }
 
@@ -559,7 +556,7 @@ static inline __sched int lock_page_or_retry(struct page *page,
 extern void __sched wait_on_page_bit(struct page *page, int bit_nr);
 extern int __sched wait_on_page_bit_killable(struct page *page, int bit_nr);
 
-/* 
+/*
  * Wait for a page to be unlocked.
  *
  * This must be called with the caller "holding" the page,
@@ -581,7 +578,7 @@ static inline __sched int wait_on_page_locked_killable(struct page *page)
 
 extern void put_and_wait_on_page_locked(struct page *page);
 
-/* 
+/*
  * Wait for a page to complete writeback
  */
 static inline __sched void wait_on_page_writeback(struct page *page)

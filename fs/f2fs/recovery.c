@@ -682,16 +682,7 @@ retry_dn:
 		 */
 		if (dest == NEW_ADDR) {
 			f2fs_truncate_data_blocks_range(&dn, 1);
-			do {
-				err = f2fs_reserve_new_block(&dn);
-				if (err == -ENOSPC) {
-					f2fs_bug_on(sbi, 1);
-					break;
-				}
-			} while (err &&
-				IS_ENABLED(CONFIG_F2FS_FAULT_INJECTION));
-			if (err)
-				goto err;
+			f2fs_reserve_new_block(&dn);
 			continue;
 		}
 
@@ -699,14 +690,12 @@ retry_dn:
 		if (f2fs_is_valid_blkaddr(sbi, dest, META_POR)) {
 
 			if (src == NULL_ADDR) {
-				do {
+				err = f2fs_reserve_new_block(&dn);
+				while (err &&
+				       IS_ENABLED(CONFIG_F2FS_FAULT_INJECTION))
 					err = f2fs_reserve_new_block(&dn);
-					if (err == -ENOSPC) {
-						f2fs_bug_on(sbi, 1);
-						break;
-					}
-				} while (err &&
-					IS_ENABLED(CONFIG_F2FS_FAULT_INJECTION));
+				/* We should not get -ENOSPC */
+				f2fs_bug_on(sbi, err);
 				if (err)
 					goto err;
 			}
@@ -918,7 +907,9 @@ int __init f2fs_create_recovery_cache(void)
 {
 	fsync_entry_slab = f2fs_kmem_cache_create("f2fs_fsync_inode_entry",
 					sizeof(struct fsync_inode_entry));
-	return fsync_entry_slab ? 0 : -ENOMEM;
+	if (!fsync_entry_slab)
+		return -ENOMEM;
+	return 0;
 }
 
 void f2fs_destroy_recovery_cache(void)
